@@ -2,23 +2,37 @@
 
 Aplicativo pessoal para explorar um catálogo de filmes, marcar títulos assistidos, registrar filmes sem interesse, manter favoritos/watchlist e excluir filmes por expressões encontradas no título, gêneros e principalmente na sinopse.
 
-## Estrutura
+## Estrutura atual
 
-- `index.html` — interface do GitHub Pages
-- `styles.css` — estilos
-- `app.js` — lógica do catálogo e histórico pessoal
-- `data/catalogo-filmes.json` — catálogo compacto opcional, carregado automaticamente quando publicado
-- `data/README.md` — formato e procedimento para atualizar a base
-- `backup/meu_cinema_imdb_v12.html` — referência da versão local estável
+- `index.html` — aplicação publicada no GitHub Pages
+- `data/catalogo-filmes.json` — catálogo compacto hospedado, quando preenchido
+- `data/README.md` — formato e procedimento de atualização da base
+- `.nojekyll` — publicação estática direta
 
-## Dados IMDb
+## Arquitetura de dados
 
-O aplicativo não precisa hospedar os datasets brutos do IMDb. O arquivo `title.basics.tsv.gz` é grande demais para ser uma boa dependência de GitHub Pages. A estratégia do projeto é gerar um `data/catalogo-filmes.json` compacto apenas com os campos necessários ao app: IMDb ID, título, ano, gêneros, nota e votos.
+### Catálogo
 
-Se `data/catalogo-filmes.json` existir, a página tenta carregá-lo automaticamente. Caso contrário, o usuário pode importar `title.basics.tsv.gz` e `title.ratings.tsv.gz` localmente pelo navegador e manter o catálogo em IndexedDB.
+O catálogo público é separado dos dados pessoais. O arquivo `data/catalogo-filmes.json` deve conter apenas dados objetivos: IMDb ID, título, ano, gêneros, nota e votos. Quando existir e tiver conteúdo, o app tenta carregá-lo automaticamente. Caso contrário, ainda é possível importar localmente `title.basics.tsv.gz` e `title.ratings.tsv.gz` e manter o catálogo em IndexedDB.
 
-## Publicação
+### Dados pessoais — V14
 
-O projeto é estático e compatível com GitHub Pages. Publique a branch `main` a partir da raiz (`/`).
+A V14 introduz uma base IndexedDB dedicada chamada `MeuCinemaUserDB`, com três stores:
+
+- `user_movies` — assistido, sem interesse, favorito, watchlist e nota/comentário por IMDb ID;
+- `preferences` — expressões de exclusão, exclusões estruturais, preferências e snapshot de compatibilidade do localStorage;
+- `cache` — cache dos dados enriquecidos de filmes.
+
+O sistema mantém compatibilidade com o armazenamento legado e migra os estados pessoais existentes para a nova base.
+
+### Backup
+
+A V14 adiciona `Backup completo` e `Restaurar backup`. O backup JSON reúne `user_movies`, `preferences`, `cache` e o localStorage legado, permitindo recuperação integral dos dados pessoais antes da futura sincronização em nuvem.
+
+## Próximas fases
+
+1. preencher `data/catalogo-filmes.json` com o catálogo compacto;
+2. consolidar o cache enriquecido;
+3. adicionar sincronização opcional via backend, mantendo o GitHub Pages apenas como frontend estático.
 
 > IMDb é marca de seus respectivos proprietários. Este projeto é um catálogo pessoal e não oficial.
