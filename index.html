@@ -249,7 +249,7 @@ const COLLECTION_META={
   hidden:['Joias escondidas','Filmes muito bem avaliados, mas com menos exposição que os grandes blockbusters.','7,5+ · 5k–150k votos'],
   animation:['Animação','Filmes classificados como Animation no catálogo local.','Gênero: Animation']
 };
-function setCollection(name){activeCollection=name in COLLECTION_META?name:'catalog';document.querySelectorAll('.collectionBtn').forEach(b=>b.classList.toggle('active',b.dataset.collection===activeCollection));const m=COLLECTION_META[activeCollection];document.getElementById('collectionHeading').textContent=m[0];document.getElementById('collectionDesc').textContent=m[1];document.getElementById('collectionBadge').textContent=m[2];render()}
+function setCollection(name){renderAllV18=false;renderLimitV18=currentBatchV18();activeCollection=name in COLLECTION_META?name:'catalog';document.querySelectorAll('.collectionBtn').forEach(b=>b.classList.toggle('active',b.dataset.collection===activeCollection));const m=COLLECTION_META[activeCollection];document.getElementById('collectionHeading').textContent=m[0];document.getElementById('collectionDesc').textContent=m[1];document.getElementById('collectionBadge').textContent=m[2];render()}
 function popularityScore(m){const votes=Math.max(0,m.votes||0),rating=Math.max(0,m.rating||0),year=m.year||1900;const current=new Date().getFullYear();const recency=Math.max(0,1-(current-year)/35);return Math.log10(votes+10)*1.8 + rating*1.15 + recency*2.2}
 function collectionBase(){let a=catalog.slice();const current=new Date().getFullYear();if(activeCollection==='top250'){a=a.filter(m=>(m.votes||0)>=25000&&(m.rating||0)>=6.5).sort((x,y)=>(y.rating||0)-(x.rating||0)||Math.log10((y.votes||0)+1)-Math.log10((x.votes||0)+1)).slice(0,250)}
 else if(activeCollection==='popular'){a.sort((x,y)=>popularityScore(y)-popularityScore(x));a=a.slice(0,500)}
@@ -537,6 +537,57 @@ function filtered(){
   updateExprStatusV10(base.length,a.length);
   return a
 }
+
+let renderLimitV18=250;
+let filteredCacheV18=[];
+let renderAllV18=false;
+let infiniteObserverV18=null;
+
+function currentBatchV18(){
+  return Math.max(50,+document.getElementById('batchSizeV18')?.value||250);
+}
+function resetRenderLimitV18(){
+  renderAllV18=false;
+  renderLimitV18=currentBatchV18();
+  render();
+}
+function loadMoreV18(){
+  renderLimitV18+=currentBatchV18();
+  render();
+}
+function showAllResultsV18(){
+  renderAllV18=true;
+  render();
+}
+function applyDensityV18(){
+  const box=document.getElementById('movies');
+  if(!box)return;
+  box.classList.toggle('compactV18',document.getElementById('densityV18')?.value==='compact');
+  localStorage.setItem('mc_density_v18',document.getElementById('densityV18')?.value||'normal');
+}
+function updateResultsUIV18(total,shown){
+  const p=document.getElementById('resultsProgressV18');
+  if(p)p.textContent=`${shown.toLocaleString('pt-BR')} exibidos de ${total.toLocaleString('pt-BR')} resultados`;
+  const btn=document.getElementById('loadMoreBtnV18');
+  if(btn){
+    btn.style.display=shown<total?'inline-block':'none';
+    btn.textContent=shown<total?`Mostrar mais (${Math.min(currentBatchV18(),total-shown).toLocaleString('pt-BR')})`:'Todos os resultados carregados';
+  }
+}
+function setupInfiniteV18(){
+  if(infiniteObserverV18)infiniteObserverV18.disconnect();
+  const s=document.getElementById('resultsSentinelV18');
+  if(!s)return;
+  infiniteObserverV18=new IntersectionObserver(entries=>{
+    const e=entries[0];
+    if(e?.isIntersecting && filteredCacheV18.length>renderLimitV18 && !renderAllV18){
+      renderLimitV18+=currentBatchV18();
+      render();
+    }
+  },{rootMargin:'900px 0px'});
+  infiniteObserverV18.observe(s);
+}
+
 function render(){
   const coverage=updateCoverageV8();
   const a=filtered(),box=document.getElementById('movies');
@@ -767,7 +818,7 @@ async function importData(ev){
     savePersonal();render();alert('Histórico importado com sucesso.')
   }catch{alert('Arquivo de histórico inválido.')}ev.target.value=''
 }
-setTimeout(renderExpressionChipsV10,0);
+setTimeout(()=>{renderExpressionChipsV10();const d=localStorage.getItem('mc_density_v18');if(d&&document.getElementById('densityV18')){document.getElementById('densityV18').value=d;applyDensityV18();}},0);
 setTimeout(()=>{renderExpressionChipsV10();syncStructuralV12();},0);
 init();
 setTimeout(tryHostedCatalogV13,900);
@@ -775,7 +826,7 @@ setTimeout(tryHostedCatalogV13,900);
 
 
 <script>
-/* V17 — Títulos com link direto ao YouTube
+/* V18 — Catálogo ampliado e carregamento progressivo
    Catálogo: GitHub/IndexedDB existente
    Dados pessoais: MeuCinemaUserDB
    Preferências/cache: stores próprios
@@ -960,7 +1011,7 @@ window.V14Storage = (() => {
     }
     const backup={
       format:'MeuCinemaBackup',
-      version:17,
+      version:18,
       exportedAt:new Date().toISOString(),
       user_movies:await getAll('user_movies'),
       preferences:await getAll('preferences'),
@@ -970,7 +1021,7 @@ window.V14Storage = (() => {
     const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download='meu-cinema-backup-completo-v17.json';
+    a.download='meu-cinema-backup-completo-v18.json';
     a.click();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
     setStatus('Backup completo gerado','ok');
