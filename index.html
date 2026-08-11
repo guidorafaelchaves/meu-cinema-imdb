@@ -19,6 +19,15 @@
   .noteHint{font-size:11px;color:#7f8a9a;margin-top:4px}
 </style>
 
+
+<style id="v14-storage-style">
+.storageStatus{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid #2b3342;border-radius:999px;background:#10151e;color:#9aa4b2;font-size:11px}
+.storageDot{width:8px;height:8px;border-radius:50%;background:#6b7280}
+.storageDot.ok{background:#36c98f}
+.storageDot.warn{background:#f5c518}
+.storageMeta{margin-top:8px;color:#7f8a9a;font-size:10px}
+</style>
+
 </head>
 <body>
 <div class="wrap">
@@ -28,6 +37,10 @@
       <button class="btn primary" onclick="openCatalog()">Importar catálogo IMDb</button>
       <button class="btn" onclick="openPosterSettings()">Cartazes / TMDb</button>
       <button class="btn" onclick="exportData()">Exportar histórico</button>
+      <button class="btn" onclick="V14Storage.exportFullBackup()">Backup completo</button>
+      <button class="btn" onclick="document.getElementById('v14RestoreFile').click()">Restaurar backup</button>
+      <input id="v14RestoreFile" type="file" accept="application/json" hidden onchange="V14Storage.restoreFullBackup(event)">
+      <span class="storageStatus"><i id="v14StorageDot" class="storageDot"></i><span id="v14StorageText">Inicializando banco...</span></span>
       <button class="btn" onclick="document.getElementById('importFile').click()">Importar histórico</button>
       <input id="importFile" type="file" accept="application/json" hidden onchange="importData(event)">
     </div>
@@ -633,6 +646,250 @@ setTimeout(renderExpressionChipsV10,0);
 setTimeout(()=>{renderExpressionChipsV10();syncStructuralV12();},0);
 init();
 setTimeout(tryHostedCatalogV13,900);
+</script>
+
+
+<script>
+/* V14 — Persistência organizada
+   Catálogo: GitHub/IndexedDB existente
+   Dados pessoais: MeuCinemaUserDB
+   Preferências/cache: stores próprios
+   Backup: JSON completo
+*/
+window.V14Storage = (() => {
+  const DB_NAME='MeuCinemaUserDB';
+  const DB_VERSION=1;
+  const STORES=['user_movies','preferences','cache'];
+  let userDb=null;
+  let ready=false;
+
+  const setStatus=(text,kind='ok')=>{
+    const t=document.getElementById('v14StorageText');
+    const d=document.getElementById('v14StorageDot');
+    if(t)t.textContent=text;
+    if(d){d.className='storageDot '+kind;}
+  };
+
+  function openDb(){
+    return new Promise((resolve,reject)=>{
+      const req=indexedDB.open(DB_NAME,DB_VERSION);
+      req.onupgradeneeded=()=>{
+        const db=req.result;
+        if(!db.objectStoreNames.contains('user_movies')) db.createObjectStore('user_movies',{keyPath:'imdbId'});
+        if(!db.objectStoreNames.contains('preferences')) db.createObjectStore('preferences',{keyPath:'key'});
+        if(!db.objectStoreNames.contains('cache')) db.createObjectStore('cache',{keyPath:'key'});
+      };
+      req.onsuccess=()=>{userDb=req.result;ready=true;resolve(userDb)};
+      req.onerror=()=>reject(req.error);
+    });
+  }
+
+  function tx(store,mode='readonly'){
+    return userDb.transaction(store,mode).objectStore(store);
+  }
+
+  function put(store,value){
+    return new Promise((resolve,reject)=>{
+      const r=tx(store,'readwrite').put(value);
+      r.onsuccess=()=>resolve(value);
+      r.onerror=()=>reject(r.error);
+    });
+  }
+
+  function getAll(store){
+    return new Promise((resolve,reject)=>{
+      const r=tx(store).getAll();
+      r.onsuccess=()=>resolve(r.result||[]);
+      r.onerror=()=>reject(r.error);
+    });
+  }
+
+  function clear(store){
+    return new Promise((resolve,reject)=>{
+      const r=tx(store,'readwrite').clear();
+      r.onsuccess=()=>resolve();
+      r.onerror=()=>reject(r.error);
+    });
+  }
+
+  function currentMovieIds(){
+    const ids=new Set();
+    try{watched.forEach(x=>ids.add(x))}catch{}
+    try{noInterest.forEach(x=>ids.add(x))}catch{}
+    try{favorites.forEach(x=>ids.add(x))}catch{}
+    try{watchlist.forEach(x=>ids.add(x))}catch{}
+    try{Object.keys(personalNotes||{}).forEach(x=>ids.add(x))}catch{}
+    return [...ids];
+  }
+
+  async function persistUserMovies(){
+    if(!ready)return;
+    const ids=currentMovieIds();
+    for(const id of ids){
+      const rec={
+        imdbId:id,
+        watched:!!(window.watched&&watched.has(id)),
+        noInterest:!!(window.noInterest&&noInterest.has(id)),
+        favorite:!!(window.favorites&&favorites.has(id)),
+        watchlist:!!(window.watchlist&&watchlist.has(id)),
+        personalNote:(window.personalNotes&&personalNotes[id])||'',
+        updatedAt:new Date().toISOString()
+      };
+      await put('user_movies',rec);
+    }
+    await put('preferences',{key:'last_save',value:new Date().toISOString()});
+    setStatus('Dados pessoais salvos','ok');
+  }
+
+  async function persistPreferences(){
+    if(!ready)return;
+    const prefs={
+      expressions:(window.expressionsV10||[]),
+      structuralExclusions:(window.structuralExclusionsV12||null),
+      activeCollection:(window.activeCollection||'catalog'),
+      personalFilter:(window.personalFilter||'')
+    };
+    await put('preferences',{key:'ui',value:prefs,updatedAt:new Date().toISOString()});
+    const ls={};
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k) ls[k]=localStorage.getItem(k);
+    }
+    await put('preferences',{key:'localStorage_snapshot',value:ls,updatedAt:new Date().toISOString()});
+  }
+
+  async function persistCache(){
+    if(!ready)return;
+    try{
+      const cacheObj=window.infoCache||{};
+      await put('cache',{key:'movie_info_cache',value:cacheObj,updatedAt:new Date().toISOString()});
+    }catch{}
+  }
+
+  async function migrateFromLegacy(){
+    if(!ready)return;
+    const existing=await getAll('user_movies');
+    if(existing.length)return;
+    await persistUserMovies();
+    await persistPreferences();
+    await persistCache();
+  }
+
+  async function hydrateToRuntime(){
+    if(!ready)return;
+    const rows=await getAll('user_movies');
+    if(rows.length){
+      try{
+        rows.forEach(r=>{
+          if(r.watched) watched.add(r.imdbId); else watched.delete(r.imdbId);
+          if(r.noInterest) noInterest.add(r.imdbId); else noInterest.delete(r.imdbId);
+          if(r.favorite) favorites.add(r.imdbId); else favorites.delete(r.imdbId);
+          if(r.watchlist) watchlist.add(r.imdbId); else watchlist.delete(r.imdbId);
+          if(r.personalNote) personalNotes[r.imdbId]=r.personalNote;
+        });
+        if(typeof savePersonal==='function') savePersonal();
+      }catch(e){console.warn('Falha ao hidratar estados pessoais',e)}
+    }
+    const prefs=await getAll('preferences');
+    const ui=prefs.find(x=>x.key==='ui')?.value;
+    if(ui){
+      try{
+        if(Array.isArray(ui.expressions)){expressionsV10.splice(0,expressionsV10.length,...ui.expressions);saveExpressionsV10?.()}
+        if(ui.structuralExclusions && window.structuralExclusionsV12){
+          structuralExclusionsV12.watched=ui.structuralExclusions.watched!==false;
+          structuralExclusionsV12.nointerest=ui.structuralExclusions.nointerest!==false;
+          saveStructuralV12?.();
+        }
+      }catch(e){console.warn('Falha ao hidratar preferências',e)}
+    }
+    try{renderExpressionChipsV10?.();syncStructuralV12?.();render?.()}catch{}
+  }
+
+  async function exportFullBackup(){
+    if(!ready) await openDb();
+    await persistUserMovies(); await persistPreferences(); await persistCache();
+    const local={};
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k)local[k]=localStorage.getItem(k);
+    }
+    const backup={
+      format:'MeuCinemaBackup',
+      version:14,
+      exportedAt:new Date().toISOString(),
+      user_movies:await getAll('user_movies'),
+      preferences:await getAll('preferences'),
+      cache:await getAll('cache'),
+      localStorage:local
+    };
+    const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='meu-cinema-backup-completo-v14.json';
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    setStatus('Backup completo gerado','ok');
+  }
+
+  async function restoreFullBackup(ev){
+    const file=ev?.target?.files?.[0];
+    if(!file)return;
+    try{
+      const data=JSON.parse(await file.text());
+      if(data.format!=='MeuCinemaBackup')throw new Error('Formato incompatível');
+      if(!ready)await openDb();
+      for(const s of STORES)await clear(s);
+      for(const x of (data.user_movies||[]))await put('user_movies',x);
+      for(const x of (data.preferences||[]))await put('preferences',x);
+      for(const x of (data.cache||[]))await put('cache',x);
+      if(data.localStorage){
+        for(const [k,v] of Object.entries(data.localStorage))localStorage.setItem(k,v);
+      }
+      await hydrateToRuntime();
+      setStatus('Backup restaurado','ok');
+      alert('Backup completo restaurado com sucesso.');
+    }catch(e){
+      console.error(e);
+      setStatus('Falha ao restaurar','warn');
+      alert('Não foi possível restaurar este backup.');
+    }finally{
+      if(ev?.target)ev.target.value='';
+    }
+  }
+
+  function wrapSaveFunction(name,extra){
+    const fn=window[name];
+    if(typeof fn!=='function'||fn.__v14wrapped)return;
+    const wrapped=function(...args){
+      const out=fn.apply(this,args);
+      Promise.resolve().then(async()=>{
+        try{await extra()}catch(e){console.warn('Persistência V14',e)}
+      });
+      return out;
+    };
+    wrapped.__v14wrapped=true;
+    window[name]=wrapped;
+  }
+
+  async function init(){
+    try{
+      await openDb();
+      await migrateFromLegacy();
+      await hydrateToRuntime();
+      wrapSaveFunction('savePersonal',async()=>{await persistUserMovies();await persistPreferences()});
+      wrapSaveFunction('saveExpressionsV10',persistPreferences);
+      wrapSaveFunction('saveStructuralV12',persistPreferences);
+      wrapSaveFunction('cacheInfo',async()=>{await persistCache()});
+      setStatus('Banco pessoal ativo','ok');
+    }catch(e){
+      console.error(e);
+      setStatus('Usando armazenamento legado','warn');
+    }
+  }
+
+  return {init,exportFullBackup,restoreFullBackup,persistUserMovies,persistPreferences,persistCache};
+})();
+window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>V14Storage.init(),700));
 </script>
 
 <script>
