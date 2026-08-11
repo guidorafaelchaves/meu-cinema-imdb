@@ -38,9 +38,13 @@
       <button class="btn" onclick="openPosterSettings()">Cartazes / TMDb</button>
       <button class="btn" onclick="exportData()">Exportar histórico</button>
       <button class="btn" onclick="V14Storage.exportFullBackup()">Backup completo</button>
+      <button class="btn" onclick="V14Storage.persistUserMovies().then(()=>V14Storage.updateIntegrity())">Regravar estados</button>
       <button class="btn" onclick="document.getElementById('v14RestoreFile').click()">Restaurar backup</button>
       <input id="v14RestoreFile" type="file" accept="application/json" hidden onchange="V14Storage.restoreFullBackup(event)">
       <span class="storageStatus"><i id="v14StorageDot" class="storageDot"></i><span id="v14StorageText">Inicializando banco...</span></span>
+      <span class="storageStatus" title="Resumo do banco pessoal">
+        <span id="v141Integrity">Assistidos 0 · Sem interesse 0 · Favoritos 0 · Quero assistir 0</span>
+      </span>
       <button class="btn" onclick="document.getElementById('importFile').click()">Importar histórico</button>
       <input id="importFile" type="file" accept="application/json" hidden onchange="importData(event)">
     </div>
@@ -650,7 +654,7 @@ setTimeout(tryHostedCatalogV13,900);
 
 
 <script>
-/* V14 — Persistência organizada
+/* V14.1 — Persistência corrigida
    Catálogo: GitHub/IndexedDB existente
    Dados pessoais: MeuCinemaUserDB
    Preferências/cache: stores próprios
@@ -725,29 +729,31 @@ window.V14Storage = (() => {
   async function persistUserMovies(){
     if(!ready)return;
     const ids=currentMovieIds();
+    await clear('user_movies');
     for(const id of ids){
       const rec={
         imdbId:id,
-        watched:!!(window.watched&&watched.has(id)),
-        noInterest:!!(window.noInterest&&noInterest.has(id)),
-        favorite:!!(window.favorites&&favorites.has(id)),
-        watchlist:!!(window.watchlist&&watchlist.has(id)),
-        personalNote:(window.personalNotes&&personalNotes[id])||'',
+        watched:!!watched.has(id),
+        noInterest:!!noInterest.has(id),
+        favorite:!!favorites.has(id),
+        watchlist:!!watchlist.has(id),
+        personalNote:personalNotes[id]||'',
         updatedAt:new Date().toISOString()
       };
       await put('user_movies',rec);
     }
     await put('preferences',{key:'last_save',value:new Date().toISOString()});
-    setStatus('Dados pessoais salvos','ok');
+    await updateIntegrity();
+    setStatus('Dados pessoais salvos · '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}),'ok');
   }
 
   async function persistPreferences(){
     if(!ready)return;
     const prefs={
-      expressions:(window.expressionsV10||[]),
-      structuralExclusions:(window.structuralExclusionsV12||null),
-      activeCollection:(window.activeCollection||'catalog'),
-      personalFilter:(window.personalFilter||'')
+      expressions:expressionsV10||[],
+      structuralExclusions:structuralExclusionsV12||null,
+      activeCollection:activeCollection||'catalog',
+      personalFilter:personalFilter||''
     };
     await put('preferences',{key:'ui',value:prefs,updatedAt:new Date().toISOString()});
     const ls={};
@@ -761,7 +767,7 @@ window.V14Storage = (() => {
   async function persistCache(){
     if(!ready)return;
     try{
-      const cacheObj=window.infoCache||{};
+      const cacheObj=infoCache||{};
       await put('cache',{key:'movie_info_cache',value:cacheObj,updatedAt:new Date().toISOString()});
     }catch{}
   }
@@ -795,7 +801,7 @@ window.V14Storage = (() => {
     if(ui){
       try{
         if(Array.isArray(ui.expressions)){expressionsV10.splice(0,expressionsV10.length,...ui.expressions);saveExpressionsV10?.()}
-        if(ui.structuralExclusions && window.structuralExclusionsV12){
+        if(ui.structuralExclusions && structuralExclusionsV12){
           structuralExclusionsV12.watched=ui.structuralExclusions.watched!==false;
           structuralExclusionsV12.nointerest=ui.structuralExclusions.nointerest!==false;
           saveStructuralV12?.();
@@ -815,7 +821,7 @@ window.V14Storage = (() => {
     }
     const backup={
       format:'MeuCinemaBackup',
-      version:14,
+      version:14.1,
       exportedAt:new Date().toISOString(),
       user_movies:await getAll('user_movies'),
       preferences:await getAll('preferences'),
@@ -825,7 +831,7 @@ window.V14Storage = (() => {
     const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download='meu-cinema-backup-completo-v14.json';
+    a.download='meu-cinema-backup-completo-v14-1.json';
     a.click();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
     setStatus('Backup completo gerado','ok');
@@ -846,6 +852,7 @@ window.V14Storage = (() => {
         for(const [k,v] of Object.entries(data.localStorage))localStorage.setItem(k,v);
       }
       await hydrateToRuntime();
+      await updateIntegrity();
       setStatus('Backup restaurado','ok');
       alert('Backup completo restaurado com sucesso.');
     }catch(e){
@@ -871,6 +878,26 @@ window.V14Storage = (() => {
     window[name]=wrapped;
   }
 
+
+  async function updateIntegrity(){
+    try{
+      const rows=await getAll('user_movies');
+      let w=0,n=0,f=0,q=0;
+      for(const r of rows){
+        if(r.watched)w++;
+        if(r.noInterest)n++;
+        if(r.favorite)f++;
+        if(r.watchlist)q++;
+      }
+      const el=document.getElementById('v141Integrity');
+      if(el)el.textContent=`Assistidos ${w} · Sem interesse ${n} · Favoritos ${f} · Quero assistir ${q}`;
+      return {watched:w,noInterest:n,favorites:f,watchlist:q,total:rows.length};
+    }catch(e){
+      console.warn('Falha ao calcular integridade',e);
+      return null;
+    }
+  }
+
   async function init(){
     try{
       await openDb();
@@ -880,6 +907,7 @@ window.V14Storage = (() => {
       wrapSaveFunction('saveExpressionsV10',persistPreferences);
       wrapSaveFunction('saveStructuralV12',persistPreferences);
       wrapSaveFunction('cacheInfo',async()=>{await persistCache()});
+      await updateIntegrity();
       setStatus('Banco pessoal ativo','ok');
     }catch(e){
       console.error(e);
@@ -887,7 +915,7 @@ window.V14Storage = (() => {
     }
   }
 
-  return {init,exportFullBackup,restoreFullBackup,persistUserMovies,persistPreferences,persistCache};
+  return {init,exportFullBackup,restoreFullBackup,persistUserMovies,persistPreferences,persistCache,updateIntegrity};
 })();
 window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>V14Storage.init(),700));
 </script>
