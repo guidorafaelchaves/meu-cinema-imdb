@@ -36,7 +36,6 @@
     <div class="actions">
       <button class="btn primary" onclick="openCatalog()">Importar catálogo IMDb</button>
       <button class="btn" onclick="openPosterSettings()">Cartazes / TMDb</button>
-      <button class="btn" onclick="openYoutubeSettingsV16()">YouTube / trailers</button>
       <button class="btn" onclick="exportData()">Exportar histórico</button>
       <button class="btn" onclick="V14Storage.exportFullBackup()">Backup completo</button>
       <button class="btn" onclick="V14Storage.persistUserMovies().then(()=>V14Storage.updateIntegrity())">Regravar estados</button>
@@ -77,8 +76,8 @@
     <button class="btn" onclick="showWatchlist()">＋ Quero assistir</button>
     <button class="btn" onclick="resetPersonalFilter()">Limpar filtro pessoal</button>
   </div>
-  <div class="ytExplainV16">
-    <b>Novidade V16 — trailers e cenas:</b> passe o mouse sobre o nome de qualquer filme. O app abre uma ficha rápida com buscas otimizadas no YouTube para trailer oficial, trailer em português e cenas. Com uma chave opcional da YouTube Data API, o sistema também encontra e mostra uma miniatura/preview do melhor vídeo dentro do próprio app. Nenhum vídeo toca automaticamente.
+  <div class="ytExplainV17" style="margin:12px 0;padding:10px 12px;border:1px solid #283447;border-radius:10px;background:#101722;color:#9aa4b2;font-size:11px;line-height:1.5">
+    <b style="color:#f8fafc">YouTube direto:</b> clique no nome de qualquer filme para abrir uma busca otimizada no YouTube. O app usa o título original, o título brasileiro quando disponível e o ano do filme para reduzir resultados errados e encontrar rapidamente trailers e vídeos relacionados.
   </div>
 
 
@@ -176,25 +175,6 @@
     <p class="help"><b>Prioridade:</b> IMDb ID → TMDb pt-BR → TMDb en-US para campos ausentes → Wikipédia validada. O app preserva campos melhores já existentes e não substitui um cartaz/título correto por um fallback inferior.</p>
   </div>
 </div>
-
-
-<div class="modal" id="youtubeModalV16">
-  <div class="dialog">
-    <button class="btn" style="float:right" onclick="closeYoutubeSettingsV16()">Fechar</button>
-    <h2>YouTube — trailers e cenas</h2>
-    <p class="help">O hover sobre o título funciona mesmo sem chave: o app cria buscas precisas usando título original, título brasileiro e ano. Para mostrar automaticamente uma miniatura do melhor trailer dentro do site, informe uma chave da <b>YouTube Data API v3</b>.</p>
-    <div class="note">
-      <label for="youtubeKeyV16"><b>Chave YouTube Data API v3 (opcional)</b></label><br><br>
-      <input id="youtubeKeyV16" style="width:100%;background:#0f131b;color:var(--text);border:1px solid var(--line);padding:11px 12px;border-radius:10px" placeholder="Cole sua API Key do YouTube aqui">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
-        <button class="btn primary" onclick="saveYoutubeSettingsV16()">Salvar chave</button>
-        <button class="btn" onclick="clearYoutubeKeyV16()">Remover chave</button>
-      </div>
-    </div>
-    <p class="help"><b>Privacidade e desempenho:</b> a chave fica somente neste navegador e não entra no backup. O app não reproduz vídeos automaticamente e só consulta a API quando você permanece sobre um título e ainda não existe resultado em cache.</p>
-  </div>
-</div>
-<div id="ytPopoverV16" onmouseenter="cancelYoutubeCloseV16()" onmouseleave="scheduleYoutubeCloseV16()"></div>
 
 <script>
 const DB_NAME='meuCinemaIMDbDB', DB_VERSION=1;
@@ -572,10 +552,32 @@ function render(){
   box.innerHTML=a.slice(0,300).map((m,i)=>card(m,i)).join('');
   setupPosterObserver();
 }
+
+function youtubeQueryV17(m,inf={}){
+  const original=(inf.originalTitle||m.title||'').trim();
+  const pt=(inf.ptTitle||'').trim();
+  const year=m.year||String(inf.releaseDate||'').slice(0,4)||'';
+  const parts=[];
+  if(original)parts.push(`"${original}"`);
+  if(pt && normTitle(pt)!==normTitle(original))parts.push(`"${pt}"`);
+  if(year)parts.push(String(year));
+  parts.push('official trailer');
+  return parts.join(' ');
+}
+function youtubeUrlV17(m,inf={}){
+  return 'https://www.youtube.com/results?search_query='+encodeURIComponent(youtubeQueryV17(m,inf));
+}
+function openYoutubeV17(id){
+  const m=catalog.find(x=>x.id===id);
+  if(!m)return;
+  const inf=infoCache[id]||{};
+  window.open(youtubeUrlV17(m,inf),'_blank','noopener');
+}
+
 function card(m,i){
   const inf=infoCache[m.id]||{};
   const poster=inf.poster?`<img class="poster" src="${esc(inf.poster)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML='<div class=&quot;posterFallback&quot;>🎬</div>'">`:`<div class="posterFallback loading" data-poster-id="${m.id}">🎬</div>`;
-  const pt=(inf.ptTitle&&inf.ptTitle.toLowerCase()!==m.title.toLowerCase())?`<div class="ptTitle">${esc(inf.ptTitle)}</div>`:'';
+  const pt=(inf.ptTitle&&inf.ptTitle.toLowerCase()!==m.title.toLowerCase())?`<div class="ptTitle"><a class="movieYoutubeLink" href="${youtubeUrlV17(m,inf)}" target="_blank" rel="noopener" title="Buscar este filme no YouTube">${esc(inf.ptTitle)}</a></div>`:'';
   const conf=+inf.confidence||0;
   const confClass=conf>=90?'good':conf>=70?'mid':'';
   const reconciled=inf.source?`<span class="reconcileBadge ${confClass}">${esc(inf.source)} · ${conf}%</span>`:'';
@@ -589,7 +591,7 @@ function card(m,i){
     ${poster}
     <div class="meta">
       <div class="rank">IMDb ${m.rating?m.rating.toFixed(1):'—'} · ${fmt(m.votes)} votos</div><div class="rankScore"><span class="scoreBadge">Ajustada <strong>${weightedScore(m).toFixed(2)}</strong></span><span class="scoreBadge">Confiança ${confidenceLabel(m)}</span>${inf.originalLanguage?`<span class="scoreBadge">Idioma ${esc(inf.originalLanguage.toUpperCase())}</span>`:''}</div>
-      <div class="title movieTitleHover" tabindex="0" onmouseenter="scheduleYoutubePopoverV16(event,\'${m.id}\')" onmouseleave="scheduleYoutubeCloseV16()" onfocus="showYoutubePopoverV16(event,\'${m.id}\')" onblur="scheduleYoutubeCloseV16()">${esc(m.title)}</div>${pt}
+      <div class="title"><a class="movieYoutubeLink" href="${youtubeUrlV17(m,inf)}" target="_blank" rel="noopener" title="Buscar este filme no YouTube">${esc(m.title)}</a></div>${pt}<div class="movieYoutubeHint">▶ Clique no título para buscar no YouTube</div>
       <div class="sub"><span>${m.year||'—'}</span><span>${esc((m.genres||'').replaceAll(',',' · '))}</span></div>
       <div class="plot" data-search-text="true">${esc(inf.plot||'Carregando sinopse e cartaz automaticamente...')}</div>
       ${reconciled}${metaExtra?`<div class="metaLine">${esc(metaExtra)}</div>`:''}${note}
@@ -741,7 +743,7 @@ async function loadInfo(id,force=false){
 
 function openPosterSettings(){document.getElementById('tmdbKey').value=tmdbKey;document.getElementById('posterModal').classList.add('show')}
 function closePosterSettings(){document.getElementById('posterModal').classList.remove('show')}
-function savePosterSettings(){tmdbKey=document.getElementById('tmdbKey').value.trim();if(tmdbKey)localStorage.setItem('mc_tmdbKey',tmdbKey);else localStorage.removeItem('mc_tmdbKey');closePosterSettings();alert(tmdbKey?'Chave TMDb salva. Novos cartazes usarão o TMDb por correspondência exata do IMDb ID.':'Configuração salva. A V6 seguirá usando a Wikipédia com validação rígida de título/ano.')}
+function savePosterSettings(){tmdbKey=document.getElementById('tmdbKey').value.trim();if(tmdbKey)localStorage.setItem('mc_tmdbKey',tmdbKey);else localStorage.removeItem('mc_tmdbKey');closePosterSettings();alert(tmdbKey?'Chave TMDb salva. Novos cartazes usarão o TMDb por correspondência exata do IMDb ID.':'Configuração salva. A Wikipédia continuará sendo usada como fallback validado por título e ano.')}
 function clearTmdbKey(){tmdbKey='';localStorage.removeItem('mc_tmdbKey');document.getElementById('tmdbKey').value='';alert('Chave TMDb removida.')}
 
 
@@ -773,7 +775,7 @@ setTimeout(tryHostedCatalogV13,900);
 
 
 <script>
-/* V16 — Trailers inteligentes e preview YouTube
+/* V17 — Títulos com link direto ao YouTube
    Catálogo: GitHub/IndexedDB existente
    Dados pessoais: MeuCinemaUserDB
    Preferências/cache: stores próprios
@@ -878,7 +880,7 @@ window.V14Storage = (() => {
     const ls={};
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i);
-      if(k&&k!=='mc_tmdbKey'&&k!=='mc_youtubeKey_v16') ls[k]=localStorage.getItem(k);
+      if(k&&k!=='mc_tmdbKey') ls[k]=localStorage.getItem(k);
     }
     await put('preferences',{key:'localStorage_snapshot',value:ls,updatedAt:new Date().toISOString()});
   }
@@ -954,11 +956,11 @@ window.V14Storage = (() => {
     const local={};
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i);
-      if(k&&k!=='mc_tmdbKey'&&k!=='mc_youtubeKey_v16')local[k]=localStorage.getItem(k);
+      if(k&&k!=='mc_tmdbKey')local[k]=localStorage.getItem(k);
     }
     const backup={
       format:'MeuCinemaBackup',
-      version:16,
+      version:17,
       exportedAt:new Date().toISOString(),
       user_movies:await getAll('user_movies'),
       preferences:await getAll('preferences'),
@@ -968,7 +970,7 @@ window.V14Storage = (() => {
     const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download='meu-cinema-backup-completo-v16.json';
+    a.download='meu-cinema-backup-completo-v17.json';
     a.click();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
     setStatus('Backup completo gerado','ok');
@@ -1130,30 +1132,6 @@ window.V15MetaDB=(()=>{
   return {init,get,put,del};
 })();
 window.addEventListener('DOMContentLoaded',()=>V15MetaDB.init().catch(console.warn));
-</script>
-
-
-<script id="v16-youtube-module">
-let youtubeKeyV16=localStorage.getItem('mc_youtubeKey_v16')||'';
-let ytHoverTimerV16=null,ytCloseTimerV16=null,ytCurrentIdV16='',ytAnchorRectV16=null;
-function openYoutubeSettingsV16(){document.getElementById('youtubeKeyV16').value=youtubeKeyV16;document.getElementById('youtubeModalV16').classList.add('show')}
-function closeYoutubeSettingsV16(){document.getElementById('youtubeModalV16').classList.remove('show')}
-function saveYoutubeSettingsV16(){youtubeKeyV16=document.getElementById('youtubeKeyV16').value.trim();if(youtubeKeyV16)localStorage.setItem('mc_youtubeKey_v16',youtubeKeyV16);else localStorage.removeItem('mc_youtubeKey_v16');closeYoutubeSettingsV16();alert(youtubeKeyV16?'Chave do YouTube salva neste navegador. O preview embutido ficará disponível no hover.':'Configuração salva. Os atalhos de busca do YouTube continuarão funcionando sem chave.')}
-function clearYoutubeKeyV16(){youtubeKeyV16='';localStorage.removeItem('mc_youtubeKey_v16');document.getElementById('youtubeKeyV16').value='';alert('Chave do YouTube removida.')}
-function youtubeQueriesV16(m,inf={}){const original=(inf.originalTitle||m.title||'').trim(),pt=(inf.ptTitle||'').trim(),year=m.year||String(inf.releaseDate||'').slice(0,4)||'',baseOriginal=`"${original}" ${year}`.trim(),basePt=`"${pt||original}" ${year}`.trim();return{trailer:`${baseOriginal} official trailer`,trailerPt:`${basePt} trailer oficial`,clips:`${baseOriginal} movie clip`,general:baseOriginal}}
-function youtubeSearchUrlV16(q){return'https://www.youtube.com/results?search_query='+encodeURIComponent(q)}
-function escAttrV16(s=''){return String(s).replace(/"/g,'&quot;')}
-function positionYoutubePopoverV16(rect){const p=document.getElementById('ytPopoverV16');if(!p||!rect)return;const margin=10,width=Math.min(390,window.innerWidth-24);let left=Math.min(rect.left,window.innerWidth-width-margin);left=Math.max(margin,left);let top=rect.bottom+8;p.style.width=width+'px';p.style.left=left+'px';p.style.top=top+'px';requestAnimationFrame(()=>{const h=p.getBoundingClientRect().height;if(top+h>window.innerHeight-margin){top=Math.max(margin,rect.top-h-8);p.style.top=top+'px'}})}
-function scheduleYoutubePopoverV16(ev,id){clearTimeout(ytHoverTimerV16);clearTimeout(ytCloseTimerV16);ytAnchorRectV16=ev.currentTarget.getBoundingClientRect();ytHoverTimerV16=setTimeout(()=>showYoutubePopoverV16(ev,id),350)}
-function scheduleYoutubeCloseV16(){clearTimeout(ytCloseTimerV16);ytCloseTimerV16=setTimeout(closeYoutubePopoverV16,260)}
-function cancelYoutubeCloseV16(){clearTimeout(ytCloseTimerV16)}
-function closeYoutubePopoverV16(){const p=document.getElementById('ytPopoverV16');if(p)p.classList.remove('show');ytCurrentIdV16=''}
-async function showYoutubePopoverV16(ev,id){clearTimeout(ytHoverTimerV16);clearTimeout(ytCloseTimerV16);const m=catalog.find(x=>x.id===id);if(!m)return;ytCurrentIdV16=id;ytAnchorRectV16=ev.currentTarget?.getBoundingClientRect?.()||ytAnchorRectV16;const inf=infoCache[id]||{},q=youtubeQueriesV16(m,inf),pt=(inf.ptTitle&&inf.ptTitle!==m.title)?inf.ptTitle:'';const p=document.getElementById('ytPopoverV16');p.innerHTML=`<div class="ytHeadV16"><div><div class="ytTitleV16">${esc(pt||m.title)}</div><div class="ytSubV16">${pt?esc(m.title)+' · ':''}${m.year||'—'}</div></div><button class="ytCloseV16" onclick="closeYoutubePopoverV16()">×</button></div><div class="ytGridV16"><a class="ytActionV16" target="_blank" rel="noopener" href="${youtubeSearchUrlV16(q.trailer)}">▶ Trailer oficial</a><a class="ytActionV16" target="_blank" rel="noopener" href="${youtubeSearchUrlV16(q.trailerPt)}">▶ Trailer PT-BR</a><a class="ytActionV16" target="_blank" rel="noopener" href="${youtubeSearchUrlV16(q.clips)}">🎬 Cenas do filme</a><a class="ytActionV16" target="_blank" rel="noopener" href="${youtubeSearchUrlV16(q.general)}">YouTube ↗</a></div><div id="ytPreviewSlotV16" class="ytInfoV16">${youtubeKeyV16?'Procurando um trailer compatível…':'Preview dentro do app: configure uma chave opcional do YouTube em “YouTube / trailers”.'}</div><div class="ytInfoV16">Busca principal: ${esc(q.trailer)}</div>`;p.classList.add('show');positionYoutubePopoverV16(ytAnchorRectV16);if(youtubeKeyV16)setTimeout(()=>loadYoutubePreviewV16(id,q.trailer),450)}
-function scoreYoutubeResultV16(item,m,inf={}){const text=(item.snippet?.title||'').toLowerCase(),channel=(item.snippet?.channelTitle||'').toLowerCase();let s=0;if(/official trailer/.test(text))s+=45;if(/\btrailer\b/.test(text))s+=25;if(/teaser/.test(text))s+=8;if(/review|reaction|explained|ending|recap|shorts|fan made|concept/.test(text))s-=45;const y=String(m.year||'');if(y&&text.includes(y))s+=8;const title=(inf.originalTitle||m.title||'').toLowerCase(),tokens=title.split(/\s+/).filter(x=>x.length>3).slice(0,4);s+=tokens.filter(t=>text.includes(t)).length*6;if(/warner|universal|paramount|sony|disney|pixar|netflix|amazon|mgm|lionsgate|20th century|focus features/.test(channel))s+=12;return s}
-async function loadYoutubePreviewV16(id,query){if(id!==ytCurrentIdV16||!youtubeKeyV16)return;const m=catalog.find(x=>x.id===id);if(!m)return;const inf=infoCache[id]||{};if(inf.youtube?.videoId){renderYoutubePreviewV16(id,inf.youtube);return}try{const url='https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=8&safeSearch=moderate&q='+encodeURIComponent(query)+'&key='+encodeURIComponent(youtubeKeyV16),r=await fetch(url);if(!r.ok)throw new Error('YouTube '+r.status);const j=await r.json(),items=(j.items||[]).filter(x=>x.id?.videoId);if(!items.length)throw new Error('Nenhum vídeo encontrado');items.sort((a,b)=>scoreYoutubeResultV16(b,m,inf)-scoreYoutubeResultV16(a,m,inf));const best=items[0],yt={videoId:best.id.videoId,title:best.snippet?.title||'Trailer',channel:best.snippet?.channelTitle||'',thumbnail:best.snippet?.thumbnails?.medium?.url||best.snippet?.thumbnails?.default?.url||'',query,score:scoreYoutubeResultV16(best,m,inf),foundAt:new Date().toISOString()};infoCache[id]={...inf,youtube:yt};try{await V15MetaDB.put(id,infoCache[id])}catch{}if(id===ytCurrentIdV16)renderYoutubePreviewV16(id,yt)}catch(e){const slot=document.getElementById('ytPreviewSlotV16');if(slot&&id===ytCurrentIdV16)slot.textContent='Não foi possível carregar o preview agora. Os atalhos de busca continuam disponíveis.';console.warn('YouTube preview',e)}}
-function renderYoutubePreviewV16(id,yt){if(id!==ytCurrentIdV16)return;const slot=document.getElementById('ytPreviewSlotV16');if(!slot)return;const watch='https://www.youtube.com/watch?v='+encodeURIComponent(yt.videoId);slot.className='ytPreviewV16';slot.innerHTML=`${yt.thumbnail?`<a href="${watch}" target="_blank" rel="noopener"><img src="${escAttrV16(yt.thumbnail)}" alt="Preview YouTube"></a>`:''}<div class="ytPreviewMetaV16"><b>${esc(yt.title||'Trailer')}</b><span>${esc(yt.channel||'YouTube')}</span><div class="ytGridV16" style="margin-top:7px"><a class="ytActionV16" target="_blank" rel="noopener" href="${watch}">▶ Assistir no YouTube</a><button class="ytActionV16" onclick="embedYoutubeV16('${id}','${yt.videoId}')">Abrir preview</button></div></div>`;positionYoutubePopoverV16(ytAnchorRectV16)}
-function embedYoutubeV16(id,videoId){if(id!==ytCurrentIdV16)return;const slot=document.getElementById('ytPreviewSlotV16');if(!slot)return;slot.className='ytPreviewV16';slot.innerHTML=`<iframe width="100%" style="aspect-ratio:16/9;border:0;display:block" src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?autoplay=0&rel=0" title="YouTube trailer preview" allow="accelerometer; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;positionYoutubePopoverV16(ytAnchorRectV16)}
-window.addEventListener('scroll',()=>{if(ytCurrentIdV16)closeYoutubePopoverV16()},{passive:true});window.addEventListener('resize',()=>{if(ytCurrentIdV16)closeYoutubePopoverV16()});
 </script>
 
 </body>
