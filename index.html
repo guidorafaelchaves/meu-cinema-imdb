@@ -160,7 +160,7 @@
   <div class="dialog">
     <button class="btn" style="float:right" onclick="closePosterSettings()">Fechar</button>
     <h2>Cartazes e sinopses</h2>
-    <p class="help">A V6 prioriza correspondência exata pelo IMDb ID no TMDb. Isso evita trocas de filmes com títulos iguais ou remakes, como pode ocorrer com 'Jersey'. Sem chave TMDb, a Wikipédia é usada apenas quando título e ano passam por uma validação mais rígida.</p>
+    <p class="help">A conciliação usa o IMDb ID como identidade canônica. Com uma chave TMDb, o app localiza exatamente o mesmo filme e combina título brasileiro, título original, cartaz, sinopse, idioma, países, duração e gêneros. A Wikipédia é usada apenas como fallback para campos ausentes.</p>
     <div class="note">
       <label for="tmdbKey"><b>Chave TMDb API v3 (opcional)</b></label><br><br>
       <input id="tmdbKey" style="width:100%;background:#0f131b;color:var(--text);border:1px solid var(--line);padding:11px 12px;border-radius:10px" placeholder="Cole sua API Key v3 aqui">
@@ -169,7 +169,7 @@
         <button class="btn" onclick="clearTmdbKey()">Remover chave</button>
       </div>
     </div>
-    <p class="help"><b>Prioridade:</b> TMDb por IMDb ID (mais confiável) → Wikipédia com validação de título/ano. A V6 usa um cache novo, portanto capas incorretas de versões anteriores não são reaproveitadas.</p>
+    <p class="help"><b>Prioridade:</b> IMDb ID → TMDb pt-BR → TMDb en-US para campos ausentes → Wikipédia validada. O app preserva campos melhores já existentes e não substitui um cartaz/título correto por um fallback inferior.</p>
   </div>
 </div>
 
@@ -181,7 +181,7 @@ let favorites=new Set(JSON.parse(localStorage.getItem('meucinema_favs_v5')||'[]'
 let watchlist=new Set(JSON.parse(localStorage.getItem('meucinema_watch_v5')||'[]'));
 let personalNotes=JSON.parse(localStorage.getItem('meucinema_notes_v5')||'{}');
 let personalFilter='';
-const infoCache=JSON.parse(localStorage.getItem('mc_infoCache_v12')||'{}');
+let infoCache=JSON.parse(localStorage.getItem('mc_infoCache_v12')||'{}');
 let tmdbKey=localStorage.getItem('mc_tmdbKey')||'';
 let enrichQueue=[], enrichActive=0, observed=new Set(), observer=null;
 let activeCollection='catalog';
@@ -195,7 +195,7 @@ function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,
 function getAllCatalog(){return new Promise((res,rej)=>{const tx=db.transaction('catalog','readonly');const r=tx.objectStore('catalog').getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 function replaceCatalog(rows){return new Promise((res,rej)=>{const tx=db.transaction('catalog','readwrite');const s=tx.objectStore('catalog');s.clear();rows.forEach(x=>s.put(x));tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})}
 
-async function init(){await openDB();catalog=await getAllCatalog();if(!catalog.length){catalog=STARTER;await replaceCatalog(catalog)} fillGenres();render()}
+async function init(){await openDB();catalog=await getAllCatalog();if(!catalog.length){catalog=STARTER;await replaceCatalog(catalog)} recomputeCatalogStatsV15();fillGenres();render()}
 function savePersonal(){
   localStorage.setItem('mc_watched',JSON.stringify([...watched]));
   localStorage.setItem('mc_noInterest',JSON.stringify([...noInterest]));
@@ -258,12 +258,16 @@ else if(activeCollection==='hidden'){a=a.filter(m=>(m.rating||0)>=7.5&&(m.votes|
 else if(activeCollection==='animation'){a=a.filter(m=>(m.genres||'').split(',').includes('Animation')).sort((x,y)=>(y.rating||0)-(x.rating||0)||(y.votes||0)-(x.votes||0))}
 return a}
 
-function catalogAverageRating(){
-  const vals=catalog.map(x=>+x.rating||0).filter(Boolean);
-  return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:6.8;
+let catalogStatsV15={avgRating:6.8,count:0};
+function recomputeCatalogStatsV15(){
+  let sum=0,count=0;
+  for(const m of catalog){const r=+m.rating||0;if(r){sum+=r;count++}}
+  catalogStatsV15={avgRating:count?sum/count:6.8,count};
+  return catalogStatsV15;
 }
+function catalogAverageRating(){return catalogStatsV15.avgRating||6.8}
 function weightedScore(m){
-  const v=+m.votes||0, R=+m.rating||0, C=catalogAverageRating(), M=25000;
+  const v=+m.votes||0, R=+m.rating||0, C=catalogStatsV15.avgRating||6.8, M=25000;
   if(!R)return 0;
   return (v/(v+M))*R + (M/(v+M))*C;
 }
@@ -391,6 +395,9 @@ function corpusV11(m){
     m.title||'',
     inf.ptTitle||'',
     m.genres||'',
+    (inf.genresMerged||[]).join(' '),
+    (inf.countryNames||[]).join(' '),
+    inf.originalLanguage||'',
     inf.plot||''
   ].join(' '));
 }
@@ -546,6 +553,14 @@ function card(m,i){
   const inf=infoCache[m.id]||{};
   const poster=inf.poster?`<img class="poster" src="${esc(inf.poster)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML='<div class=&quot;posterFallback&quot;>🎬</div>'">`:`<div class="posterFallback loading" data-poster-id="${m.id}">🎬</div>`;
   const pt=(inf.ptTitle&&inf.ptTitle.toLowerCase()!==m.title.toLowerCase())?`<div class="ptTitle">${esc(inf.ptTitle)}</div>`:'';
+  const conf=+inf.confidence||0;
+  const confClass=conf>=90?'good':conf>=70?'mid':'';
+  const reconciled=inf.source?`<span class="reconcileBadge ${confClass}">${esc(inf.source)} · ${conf}%</span>`:'';
+  const metaExtra=[
+    inf.originalLanguage?`idioma ${String(inf.originalLanguage).toUpperCase()}`:'',
+    inf.runtime?`${inf.runtime} min`:'',
+    (inf.countryNames||[]).slice(0,2).join(', ')
+  ].filter(Boolean).join(' · ');
   const note=personalNotes[m.id]?`<div class="sourceTag">📝 ${esc(personalNotes[m.id])}</div>`:'';
   return `<article class="card" id="card-${m.id}" data-movie-id="${m.id}">
     ${poster}
@@ -554,14 +569,14 @@ function card(m,i){
       <div class="title">${esc(m.title)}</div>${pt}
       <div class="sub"><span>${m.year||'—'}</span><span>${esc((m.genres||'').replaceAll(',',' · '))}</span></div>
       <div class="plot" data-search-text="true">${esc(inf.plot||'Carregando sinopse e cartaz automaticamente...')}</div>
-      ${inf.source?`<div class="sourceTag">Dados visuais: ${esc(inf.source)}</div>`:''}${note}
+      ${reconciled}${metaExtra?`<div class="metaLine">${esc(metaExtra)}</div>`:''}${note}
       <div class="cardActions">
         <button class="mini ${watched.has(m.id)?'watched':''}" onclick="toggleWatched('${m.id}')">${watched.has(m.id)?'✓ Assistido':'○ Já assisti'}</button>
         <button class="mini ${noInterest.has(m.id)?'nointerest':''}" onclick="toggleNoInterest('${m.id}')">${noInterest.has(m.id)?'✕ Sem interesse':'○ Não tenho interesse'}</button>
         <button class="mini ${favorites.has(m.id)?'activeFav':''}" onclick="toggleFavorite('${m.id}')">★</button>
         <button class="mini ${watchlist.has(m.id)?'activeFav':''}" onclick="toggleWatchlist('${m.id}')">＋ Quero assistir</button>
         <button class="mini" onclick="editNote('${m.id}')">📝</button>
-        <button class="mini" onclick="loadInfo('${m.id}',true)">Atualizar capa</button>
+        <button class="mini" onclick="loadInfo('${m.id}',true)">Reconciliar dados</button>
         <button class="mini imdb" onclick="window.open('https://www.imdb.com/title/${m.id}/','_blank')">IMDb ↗</button>
       </div>
     </div>
@@ -571,26 +586,48 @@ function card(m,i){
 function setupPosterObserver(){if(observer)observer.disconnect();observed.clear();observer=new IntersectionObserver(entries=>{for(const e of entries){if(!e.isIntersecting)continue;const id=e.target.dataset.movieId;if(id&&!infoCache[id]&&!observed.has(id)){observed.add(id);enqueueEnrich(id)}observer.unobserve(e.target)}},{rootMargin:'500px 0px'});document.querySelectorAll('.card[data-movie-id]').forEach(el=>observer.observe(el))}
 function enqueueEnrich(id){if(infoCache[id]||enrichQueue.includes(id))return;enrichQueue.push(id);pumpEnrich()}
 function pumpEnrich(){while(enrichActive<3&&enrichQueue.length){const id=enrichQueue.shift();enrichActive++;loadInfo(id,false).finally(()=>{enrichActive--;setTimeout(pumpEnrich,120)})}}
-function cacheInfo(id,obj){infoCache[id]={...(infoCache[id]||{}),...obj,ts:Date.now()};try{localStorage.setItem('mc_infoCache_v12',JSON.stringify(infoCache))}catch(e){console.warn('Cache cheio; mantendo apenas em memória.',e)}}
+function cacheInfo(id,obj){
+  infoCache[id]={...(infoCache[id]||{}),...obj,ts:Date.now()};
+  V15MetaDB?.put(id,infoCache[id]).catch(()=>{});
+}
 async function tmdbInfo(m){
   if(!tmdbKey)return null;
-  const r=await fetch(`https://api.themoviedb.org/3/find/${encodeURIComponent(m.id)}?api_key=${encodeURIComponent(tmdbKey)}&external_source=imdb_id&language=pt-BR`);
-  if(!r.ok)throw new Error('TMDb '+r.status);
-  const j=await r.json(),x=j.movie_results?.[0];
-  if(!x)return null;
-  let details=null;
-  try{
-    const d=await fetch(`https://api.themoviedb.org/3/movie/${x.id}?api_key=${encodeURIComponent(tmdbKey)}&language=pt-BR`);
-    if(d.ok)details=await d.json();
-  }catch{}
+  const base='https://api.themoviedb.org/3';
+  const find=await fetch(`${base}/find/${encodeURIComponent(m.id)}?api_key=${encodeURIComponent(tmdbKey)}&external_source=imdb_id&language=pt-BR`);
+  if(!find.ok)throw new Error('TMDb find '+find.status);
+  const fj=await find.json(), hit=fj.movie_results?.[0];
+  if(!hit)return null;
+
+  const ptReq=await fetch(`${base}/movie/${hit.id}?api_key=${encodeURIComponent(tmdbKey)}&language=pt-BR&append_to_response=images,alternative_titles,external_ids&include_image_language=pt,en,null`);
+  if(!ptReq.ok)throw new Error('TMDb details '+ptReq.status);
+  const pt=await ptReq.json();
+
+  let en=null;
+  if(!pt.overview){
+    try{
+      const er=await fetch(`${base}/movie/${hit.id}?api_key=${encodeURIComponent(tmdbKey)}&language=en-US`);
+      if(er.ok)en=await er.json();
+    }catch{}
+  }
+
+  const tmdbYear=+(String(pt.release_date||'').slice(0,4))||0;
+  const imdbYear=+m.year||0;
+  const yearDelta=(tmdbYear&&imdbYear)?Math.abs(tmdbYear-imdbYear):0;
+  const confidence=yearDelta>1?92:100;
   return {
-    plot:x.overview||'',
-    poster:x.poster_path?`https://image.tmdb.org/t/p/w342${x.poster_path}`:'',
-    ptTitle:x.title||'',
-    originalLanguage:x.original_language||details?.original_language||'',
-    countries:(details?.production_countries||[]).map(c=>c.iso_3166_1),
-    runtime:details?.runtime||0,
-    source:'TMDb · IMDb ID exato'
+    tmdbId:hit.id,
+    ptTitle:brTitleV15(pt),
+    originalTitle:pt.original_title||m.title||'',
+    plot:pt.overview||en?.overview||'',
+    poster:choosePosterV15(pt),
+    originalLanguage:pt.original_language||'',
+    countries:(pt.production_countries||[]).map(c=>c.iso_3166_1),
+    countryNames:(pt.production_countries||[]).map(c=>c.name),
+    runtime:+pt.runtime||0,
+    genresMerged:mergeGenresV15(m,pt),
+    releaseDate:pt.release_date||'',
+    source:'TMDb · IMDb ID exato',
+    confidence
   };
 }
 function normTitle(s=''){return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()}
@@ -614,11 +651,70 @@ async function wikiInfo(m,lang='pt'){
   }
   if(!best||bestScore<5)return null;
   let plot=best.extract||''; if(plot.length>430)plot=plot.slice(0,427)+'...';
-  return {plot,poster:best.thumbnail?.source||'',ptTitle:'',source:`Wikipedia ${lang.toUpperCase()} · título/ano validados`};
+  return {plot,poster:best.thumbnail?.source||'',source:`Wikipedia ${lang.toUpperCase()} · título/ano validados`,confidence:75};
 }
 
 
-async function loadInfo(id,force=false){const m=catalog.find(x=>x.id===id);if(!m)return;if(infoCache[id]&&!force)return;const cardEl=document.getElementById('card-'+id);if(force&&cardEl)cardEl.style.opacity='.6';try{let inf=null;if(tmdbKey){try{inf=await tmdbInfo(m)}catch(e){console.warn('TMDb falhou, usando fallback',e)}}if(!inf||(!inf.poster&&!inf.plot)){try{inf=await wikiInfo(m,'pt')}catch(e){console.warn(e)}}if(!inf||(!inf.poster&&!inf.plot)){try{inf=await wikiInfo(m,'en')}catch(e){console.warn(e)}}cacheInfo(id,{plot:inf?.plot||'Sinopse não encontrada automaticamente.',poster:inf?.poster||'',source:inf?.source||'—'});const el=document.getElementById('card-'+id);if(el){const replacement=card(m,0);el.outerHTML=replacement;const newEl=document.getElementById('card-'+id);if(newEl&&observer)observer.observe(newEl)}}catch(e){console.warn('Falha ao enriquecer',id,e);cacheInfo(id,{plot:'Sinopse não disponível no momento.',poster:'',source:'erro'})}finally{if(force){const c=document.getElementById('card-'+id);if(c)c.style.opacity='1'}}}
+function mergeInfoV15(base={},incoming={},preferIncoming=false){
+  const out={...base};
+  const stronger=(incoming.confidence||0)>=(base.confidence||0);
+  const choose=(k)=>{
+    const v=incoming[k];
+    if(v===undefined||v===null||v===''||(Array.isArray(v)&&!v.length))return;
+    if(preferIncoming||!out[k]||stronger)out[k]=v;
+  };
+  ['ptTitle','originalTitle','plot','poster','originalLanguage','runtime','releaseDate','tmdbId','source','confidence'].forEach(choose);
+  ['countries','countryNames','genresMerged'].forEach(choose);
+  return out;
+}
+let renderReconcileTimerV15=null;
+function scheduleReconcileRenderV15(){
+  if(!expressionsV10?.length)return;
+  clearTimeout(renderReconcileTimerV15);
+  renderReconcileTimerV15=setTimeout(()=>render(),250);
+}
+async function loadInfo(id,force=false){
+  const m=catalog.find(x=>x.id===id);if(!m)return;
+  const cardEl=document.getElementById('card-'+id);if(force&&cardEl)cardEl.style.opacity='.6';
+  try{
+    if(force){try{await V15MetaDB.del(id)}catch{};delete infoCache[id]}
+    if(!force&&!infoCache[id]){
+      try{
+        const saved=await V15MetaDB.get(id);
+        if(saved){infoCache[id]=saved;const el=document.getElementById('card-'+id);if(el)el.outerHTML=card(m,0);return}
+      }catch{}
+    }
+    if(infoCache[id]&&!force)return;
+
+    let merged={};
+    if(tmdbKey){
+      try{
+        const t=await tmdbInfo(m);
+        if(t)merged=mergeInfoV15(merged,t,true);
+      }catch(e){console.warn('TMDb falhou; usando fallback validado',e)}
+    }
+    if(!merged.plot){
+      try{const w=await wikiInfo(m,'pt');if(w)merged=mergeInfoV15(merged,w,false)}catch(e){console.warn(e)}
+    }
+    if(!merged.plot){
+      try{const w=await wikiInfo(m,'en');if(w)merged=mergeInfoV15(merged,w,false)}catch(e){console.warn(e)}
+    }
+    if(!merged.plot)merged.plot='Sinopse não encontrada automaticamente.';
+    if(!merged.source)merged.source='sem correspondência externa';
+    if(!merged.confidence)merged.confidence=40;
+
+    infoCache[id]=merged;
+    try{await V15MetaDB.put(id,merged)}catch(e){console.warn('Cache IndexedDB',e)}
+    const el=document.getElementById('card-'+id);
+    if(el){el.outerHTML=card(m,0);const n=document.getElementById('card-'+id);if(n&&observer)observer.observe(n)}
+    scheduleReconcileRenderV15();
+  }catch(e){
+    console.warn('Falha ao reconciliar',id,e);
+    infoCache[id]={plot:'Sinopse não disponível no momento.',poster:'',source:'erro',confidence:0};
+  }finally{
+    if(force){const c=document.getElementById('card-'+id);if(c)c.style.opacity='1'}
+  }
+}
 
 function openPosterSettings(){document.getElementById('tmdbKey').value=tmdbKey;document.getElementById('posterModal').classList.add('show')}
 function closePosterSettings(){document.getElementById('posterModal').classList.remove('show')}
@@ -630,7 +726,7 @@ function openCatalog(){document.getElementById('catalogModal').classList.add('sh
 function setProg(p,t){document.getElementById('progressBar').style.width=p+'%';document.getElementById('progressText').textContent=t}
 function fileTextStream(file){let stream=file.stream();if(file.name.toLowerCase().endsWith('.gz')){if(!('DecompressionStream' in window))throw new Error('Seu navegador não oferece descompactação gzip nativa. Use Chrome ou Edge atualizado.');stream=stream.pipeThrough(new DecompressionStream('gzip'))}return stream.pipeThrough(new TextDecoderStream())}
 async function* readLines(file){const reader=fileTextStream(file).getReader();let buf='';try{while(true){const {value,done}=await reader.read();if(done)break;buf+=value;let i;while((i=buf.indexOf('\n'))>=0){let line=buf.slice(0,i);buf=buf.slice(i+1);if(line.endsWith('\r'))line=line.slice(0,-1);yield line}}if(buf)yield buf}finally{reader.releaseLock()}}
-async function updateFromLocalIMDb(){try{const rf=document.getElementById('ratingsFile').files[0],bf=document.getElementById('basicsFile').files[0];if(!rf||!bf)throw new Error('Selecione os arquivos title.ratings.tsv.gz e title.basics.tsv.gz.');const minVotes=Math.max(0,+document.getElementById('voteThreshold').value||0);setProg(5,'Lendo avaliações do arquivo local...');const ratings=new Map();let n=0;for await(const line of readLines(rf)){if(n++===0)continue;if(!line)continue;const [id,r,v]=line.split('\t');if(id&&+v>=minVotes)ratings.set(id,[+r,+v]);if(n%250000===0)setProg(18,`Avaliações processadas: ${n.toLocaleString('pt-BR')} · aprovadas: ${ratings.size.toLocaleString('pt-BR')}`)}setProg(30,`${ratings.size.toLocaleString('pt-BR')} títulos passaram pelo filtro de votos. Lendo dados básicos...`);const out=[];let bcount=0,movies=0;for await(const line of readLines(bf)){if(bcount++===0)continue;if(!line)continue;const c=line.split('\t');if(c.length<9)continue;const [id,type,primary,original,isAdult,start,end,runtime,genres]=c;if(type!=='movie'||isAdult==='1'||!ratings.has(id))continue;const rv=ratings.get(id);out.push({id,title:primary||original,year:start==='\\N'?null:+start,rating:rv[0],votes:rv[1],genres:genres==='\\N'?'':genres});movies++;if(bcount%500000===0)setProg(55,`Títulos processados: ${bcount.toLocaleString('pt-BR')} · filmes selecionados: ${movies.toLocaleString('pt-BR')}`)}if(!out.length)throw new Error('Nenhum filme foi encontrado. Verifique os arquivos e o limite mínimo de votos.');setProg(78,`Ordenando ${out.length.toLocaleString('pt-BR')} filmes...`);out.sort((a,b)=>(b.rating||0)-(a.rating||0)||(b.votes||0)-(a.votes||0));setProg(88,'Salvando catálogo no navegador...');await replaceCatalog(out);catalog=out;localStorage.setItem('mc_catalog_meta',JSON.stringify({updatedAt:new Date().toISOString(),minVotes,count:out.length}));fillGenres();render();setProg(100,`Catálogo criado com ${out.length.toLocaleString('pt-BR')} filmes. Seu histórico de assistidos foi preservado.`);setTimeout(closeCatalog,1800)}catch(e){console.error(e);setProg(0,'Erro: '+e.message)}}
+async function updateFromLocalIMDb(){try{const rf=document.getElementById('ratingsFile').files[0],bf=document.getElementById('basicsFile').files[0];if(!rf||!bf)throw new Error('Selecione os arquivos title.ratings.tsv.gz e title.basics.tsv.gz.');const minVotes=Math.max(0,+document.getElementById('voteThreshold').value||0);setProg(5,'Lendo avaliações do arquivo local...');const ratings=new Map();let n=0;for await(const line of readLines(rf)){if(n++===0)continue;if(!line)continue;const [id,r,v]=line.split('\t');if(id&&+v>=minVotes)ratings.set(id,[+r,+v]);if(n%250000===0)setProg(18,`Avaliações processadas: ${n.toLocaleString('pt-BR')} · aprovadas: ${ratings.size.toLocaleString('pt-BR')}`)}setProg(30,`${ratings.size.toLocaleString('pt-BR')} títulos passaram pelo filtro de votos. Lendo dados básicos...`);const out=[];let bcount=0,movies=0;for await(const line of readLines(bf)){if(bcount++===0)continue;if(!line)continue;const c=line.split('\t');if(c.length<9)continue;const [id,type,primary,original,isAdult,start,end,runtime,genres]=c;if(type!=='movie'||isAdult==='1'||!ratings.has(id))continue;const rv=ratings.get(id);out.push({id,title:primary||original,year:start==='\\N'?null:+start,rating:rv[0],votes:rv[1],genres:genres==='\\N'?'':genres});movies++;if(bcount%500000===0)setProg(55,`Títulos processados: ${bcount.toLocaleString('pt-BR')} · filmes selecionados: ${movies.toLocaleString('pt-BR')}`)}if(!out.length)throw new Error('Nenhum filme foi encontrado. Verifique os arquivos e o limite mínimo de votos.');setProg(78,`Ordenando ${out.length.toLocaleString('pt-BR')} filmes...`);out.sort((a,b)=>(b.rating||0)-(a.rating||0)||(b.votes||0)-(a.votes||0));setProg(88,'Salvando catálogo no navegador...');await replaceCatalog(out);catalog=out;recomputeCatalogStatsV15();localStorage.setItem('mc_catalog_meta',JSON.stringify({updatedAt:new Date().toISOString(),minVotes,count:out.length}));fillGenres();render();setProg(100,`Catálogo criado com ${out.length.toLocaleString('pt-BR')} filmes. Seu histórico de assistidos foi preservado.`);setTimeout(closeCatalog,1800)}catch(e){console.error(e);setProg(0,'Erro: '+e.message)}}
 
 function exportData(){
   const data={version:12,exportedAt:new Date().toISOString(),watched:[...watched],noInterest:[...noInterest],favorites:[...favorites],watchlist:[...watchlist],personalNotes};
@@ -654,7 +750,7 @@ setTimeout(tryHostedCatalogV13,900);
 
 
 <script>
-/* V14.1 — Persistência corrigida
+/* V15 — Conciliação e unificação online
    Catálogo: GitHub/IndexedDB existente
    Dados pessoais: MeuCinemaUserDB
    Preferências/cache: stores próprios
@@ -759,17 +855,35 @@ window.V14Storage = (() => {
     const ls={};
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i);
-      if(k) ls[k]=localStorage.getItem(k);
+      if(k&&k!=='mc_tmdbKey') ls[k]=localStorage.getItem(k);
     }
     await put('preferences',{key:'localStorage_snapshot',value:ls,updatedAt:new Date().toISOString()});
   }
 
   async function persistCache(){
-    if(!ready)return;
+    // V15: enriquecimento é salvo por IMDb ID no MeuCinemaMetaDB.
+    return;
+  }
+
+  async function reconcileLegacyUserStateV15(){
     try{
-      const cacheObj=infoCache||{};
-      await put('cache',{key:'movie_info_cache',value:cacheObj,updatedAt:new Date().toISOString()});
-    }catch{}
+      const marker=(await getAll('preferences')).find(x=>x.key==='storage_schema')?.value;
+      if(marker==='15')return;
+      const rows=await getAll('user_movies');
+      // Runtime sets were initialized from legacy localStorage before this layer starts.
+      for(const r of rows){
+        if(r.watched)watched.add(r.imdbId);
+        if(r.noInterest)noInterest.add(r.imdbId);
+        if(r.favorite)favorites.add(r.imdbId);
+        if(r.watchlist)watchlist.add(r.imdbId);
+        if(r.personalNote&&!personalNotes[r.imdbId])personalNotes[r.imdbId]=r.personalNote;
+      }
+      // Resolve impossible dual state in favor of "assistido".
+      for(const id of watched)noInterest.delete(id);
+      savePersonal();
+      await persistUserMovies();
+      await put('preferences',{key:'storage_schema',value:'15',updatedAt:new Date().toISOString()});
+    }catch(e){console.warn('Reconciliação legado V15',e)}
   }
 
   async function migrateFromLegacy(){
@@ -817,11 +931,11 @@ window.V14Storage = (() => {
     const local={};
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i);
-      if(k)local[k]=localStorage.getItem(k);
+      if(k&&k!=='mc_tmdbKey')local[k]=localStorage.getItem(k);
     }
     const backup={
       format:'MeuCinemaBackup',
-      version:14.1,
+      version:15,
       exportedAt:new Date().toISOString(),
       user_movies:await getAll('user_movies'),
       preferences:await getAll('preferences'),
@@ -831,7 +945,7 @@ window.V14Storage = (() => {
     const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download='meu-cinema-backup-completo-v14-1.json';
+    a.download='meu-cinema-backup-completo-v15.json';
     a.click();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
     setStatus('Backup completo gerado','ok');
@@ -854,7 +968,8 @@ window.V14Storage = (() => {
       await hydrateToRuntime();
       await updateIntegrity();
       setStatus('Backup restaurado','ok');
-      alert('Backup completo restaurado com sucesso.');
+      alert('Backup completo restaurado com sucesso. A página será recarregada.');
+      setTimeout(()=>location.reload(),300);
     }catch(e){
       console.error(e);
       setStatus('Falha ao restaurar','warn');
@@ -902,6 +1017,7 @@ window.V14Storage = (() => {
     try{
       await openDb();
       await migrateFromLegacy();
+      await reconcileLegacyUserStateV15();
       await hydrateToRuntime();
       wrapSaveFunction('savePersonal',async()=>{await persistUserMovies();await persistPreferences()});
       wrapSaveFunction('saveExpressionsV10',persistPreferences);
@@ -928,44 +1044,69 @@ window.MC_HOSTED_CATALOG_URL = './data/catalogo-filmes.json';
 
 async function tryHostedCatalogV13(){
   try{
-    const r = await fetch(window.MC_HOSTED_CATALOG_URL, {cache:'no-store'});
-    if(!r.ok) return false;
-    const j = await r.json();
-    const rows = Array.isArray(j) ? j : (Array.isArray(j.movies) ? j.movies : []);
-    if(!rows.length) return false;
+    const r=await fetch(window.MC_HOSTED_CATALOG_URL,{cache:'no-store'});
+    if(!r.ok)return false;
+    const j=await r.json();
+    const rows=Array.isArray(j)?j:(Array.isArray(j.movies)?j.movies:[]);
+    if(!rows.length)return false;
+    const normalized=rows.map(x=>({
+      id:x.id||x.tconst,
+      title:x.title||x.primaryTitle||'',
+      year:+(x.year||x.startYear||0)||0,
+      genres:Array.isArray(x.genres)?x.genres.join(','):(x.genres||''),
+      rating:+(x.rating||x.averageRating||0)||0,
+      votes:+(x.votes||x.numVotes||0)||0
+    })).filter(x=>x.id&&x.title);
+    if(!normalized.length)return false;
 
-    // Normalize a compact hosted schema into the same in-app movie objects.
-    const normalized = rows.map(x => ({
-      id: x.id || x.tconst,
-      title: x.title || x.primaryTitle || '',
-      year: +(x.year || x.startYear || 0) || 0,
-      genres: Array.isArray(x.genres) ? x.genres.join(',') : (x.genres || ''),
-      rating: +(x.rating || x.averageRating || 0) || 0,
-      votes: +(x.votes || x.numVotes || 0) || 0
-    })).filter(x => x.id && x.title);
+    const hostedVersion=String(j.catalogVersion||j.generatedAt||'');
+    const localMeta=JSON.parse(localStorage.getItem('mc_catalog_meta')||'{}');
+    const currentVersion=String(localMeta.hostedVersion||'');
+    const shouldUse=hostedVersion?hostedVersion!==currentVersion:
+      (!catalog.length||normalized.length>=Math.max(100,catalog.length));
 
-    if(!normalized.length) return false;
-
-    // Prefer the larger catalog. This protects a user's existing 48k local catalog
-    // from being replaced accidentally by a small test JSON.
-    if(!Array.isArray(catalog) || normalized.length > catalog.length){
-      catalog = normalized;
-      try{
-        if(db){
-          const tx=db.transaction('movies','readwrite'), store=tx.objectStore('movies');
-          store.clear();
-          for(const m of normalized) store.put(m);
-        }
-      }catch(e){ console.warn('Não foi possível persistir catálogo hospedado no IndexedDB',e); }
-      fillGenres();
-      render();
+    if(shouldUse){
+      catalog=normalized;
+      recomputeCatalogStatsV15();
+      try{await replaceCatalog(normalized)}catch(e){console.warn('Persistência do catálogo hospedado',e)}
+      localStorage.setItem('mc_catalog_meta',JSON.stringify({
+        ...localMeta,source:'github',hostedVersion,updatedAt:new Date().toISOString(),count:normalized.length
+      }));
+      fillGenres();render();
     }
     return true;
   }catch(e){
-    console.info('Catálogo hospedado ainda não publicado; usando catálogo local.', e);
+    console.info('Catálogo hospedado indisponível; usando catálogo local.',e);
     return false;
   }
 }
+</script>
+
+
+<script id="v15-meta-layer">
+/* V15 — banco de metadados por filme */
+window.V15MetaDB=(()=>{
+  const NAME='MeuCinemaMetaDB',VER=1,STORE='movie_meta';
+  let dbm=null;
+  function open(){return new Promise((res,rej)=>{
+    const r=indexedDB.open(NAME,VER);
+    r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'imdbId'})};
+    r.onsuccess=()=>{dbm=r.result;res(dbm)};r.onerror=()=>rej(r.error);
+  })}
+  function get(id){return new Promise((res,rej)=>{if(!dbm)return res(null);const r=dbm.transaction(STORE).objectStore(STORE).get(id);r.onsuccess=()=>res(r.result||null);r.onerror=()=>rej(r.error)})}
+  function put(id,data){return new Promise((res,rej)=>{if(!dbm)return res();const rec={imdbId:id,...data,updatedAt:new Date().toISOString()};const r=dbm.transaction(STORE,'readwrite').objectStore(STORE).put(rec);r.onsuccess=()=>res(rec);r.onerror=()=>rej(r.error)})}
+  function del(id){return new Promise((res,rej)=>{if(!dbm)return res();const r=dbm.transaction(STORE,'readwrite').objectStore(STORE).delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+  async function migrateLegacy(){
+    try{
+      for(const [id,data] of Object.entries(infoCache||{})){if(data&&(data.poster||data.plot||data.ptTitle))await put(id,data)}
+      // Stop growing the legacy localStorage cache after migration.
+      localStorage.removeItem('mc_infoCache_v12');
+    }catch(e){console.warn('Migração de metadados',e)}
+  }
+  async function init(){await open();await migrateLegacy()}
+  return {init,get,put,del};
+})();
+window.addEventListener('DOMContentLoaded',()=>V15MetaDB.init().catch(console.warn));
 </script>
 
 </body>
